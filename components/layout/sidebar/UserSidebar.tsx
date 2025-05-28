@@ -91,7 +91,8 @@ const conversations = [
 ];
 export default function UserSidebar() {
   const pathname = usePathname();
-  if (pathname !== "/chat") return null; // Only render if on the chat page
+  if (pathname.split("/")[0] === "/chat") return null; // Only render if on the chat page
+
   return (
     <>
       {/* Desktop Version */}
