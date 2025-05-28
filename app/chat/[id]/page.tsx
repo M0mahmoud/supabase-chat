@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Send } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import ChatMessageItem from "@/components/ChatMessages/ChatMessageItem";
@@ -8,14 +8,19 @@ import ChatHeader from "@/components/ChatMessages/ChatHeader";
 import { useRealtimeChat } from "@/hooks/use-realtime-chat";
 import { useSearchParams } from "next/navigation";
 
-export default function UserChats() {
+export default function UserChat({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id: ChatID } = use(params);
   const param = useSearchParams();
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const [newMessage, setNewMessage] = useState("");
 
   const { isConnected, messages, sendMessage } = useRealtimeChat({
-    roomName: "florencio-dorrance",
+    roomName: ChatID,
     username: param.get("username") || "Anonymous",
   });
 
@@ -26,12 +31,7 @@ export default function UserChats() {
     );
     return sortedMessages;
   }, [messages]);
-
-  // useEffect(() => {
-  //   if (onMessage) {
-  //     onMessage(allMessages);
-  //   }
-  // }, [allMessages, onMessage]);
+  console.log("🚀 ~ allMessages ~ allMessages:", allMessages);
 
   const handleSendMessage = useCallback(
     (e: React.FormEvent) => {
@@ -68,7 +68,7 @@ export default function UserChats() {
             <ChatMessageItem
               msg={msg}
               key={msg.id}
-              isOwnMessage={msg.user.name === "Mahmoud"}
+              isOwnMessage={msg.user.name === param.get("username")}
             />
           ))}
           <div ref={messagesEndRef} />

@@ -15,6 +15,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { createClient } from "@/utils/supabase/client";
+import nProgress from "nprogress";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -40,6 +41,7 @@ export default function LoginPage() {
       }
 
       // Redirect to dashboard or home page after successful login
+      nProgress.start();
       router.push("/");
     } catch (error: any) {
       setError(error.message);

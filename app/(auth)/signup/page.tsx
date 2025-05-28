@@ -15,6 +15,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { createClient } from "@/utils/supabase/client";
+import nProgress from "nprogress";
 
 export default function SignupPage() {
   const [email, setEmail] = useState("");
@@ -68,6 +69,7 @@ export default function SignupPage() {
       }
 
       // Redirect to verification page
+      nProgress.start();
       router.push("/verify-email");
     } catch (error: any) {
       setError(error.message);
