@@ -6,58 +6,133 @@ import { cn } from "@/lib/utils";
 import { AVATAR_URL } from "@/utils/constants";
 import { createClient } from "@/utils/supabase/client";
 import { User } from "@/types/index";
+import { User as AuthUser } from "@supabase/supabase-js";
 import Loading from "../layout/Loading";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import nprogress from "nprogress";
 
+const supabase = createClient();
+
 export default function UserList() {
-  const supabase = createClient();
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, isLoading: authLoading } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const [users, setUsers] = useState<User[]>([]);
 
   useEffect(() => {
     const fetchUsers = async () => {
-      setIsLoading(true);
-      const { data: usersData, error } = await supabase
-        .from("users")
-        .select("*")
-        .neq("id", currentUser?.id);
+      // Wait for auth to load and ensure user exists
+      if (authLoading) return;
 
-      if (error) {
-        toast.error("Failed to fetch users");
+      if (!currentUser?.id) {
         setIsLoading(false);
         return;
       }
 
-      setUsers(usersData || []);
-      setIsLoading(false);
+      setIsLoading(true);
+      try {
+        const { data: usersData, error } = await supabase
+          .from("users")
+          .select("*")
+          .neq("id", currentUser.id); // Now currentUser.id is guaranteed to exist
+
+        if (error) throw error;
+
+        setUsers(usersData || []);
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        toast.error("Failed to fetch users");
+      } finally {
+        setIsLoading(false);
+      }
     };
 
     fetchUsers();
-  }, [currentUser?.id]);
 
-  if (isLoading) return <Loading />;
+    // Real-time subscription
+    const channel = supabase
+      .channel("users")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "users",
+          filter: `id=neq.${currentUser?.id}`,
+        },
+        (payload) => {
+          switch (payload.eventType) {
+            case "INSERT":
+              setUsers((prev) => [...prev, payload.new as User]);
+              break;
+            case "UPDATE":
+              setUsers((prev) =>
+                prev.map((user) =>
+                  user.id === payload.new.id ? (payload.new as User) : user
+                )
+              );
+              break;
+            case "DELETE":
+              setUsers((prev) =>
+                prev.filter((user) => user.id !== payload.old.id)
+              );
+              break;
+          }
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          console.log("Subscribed to user changes");
+        }
+      });
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser?.id, authLoading, supabase]);
+
+  if (authLoading || isLoading) return <Loading />;
+
+  if (!currentUser) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <p className="text-gray-500">Please log in to view users</p>
+      </div>
+    );
+  }
+
+  if (users.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <p className="text-gray-500">No users found</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4 w-full max-w-[991px] mx-auto">
       {users.map((user) => (
-        <UserItem key={user.id} user={user} />
+        <UserItem key={user.id} user={user} currentUser={currentUser} />
       ))}
     </div>
   );
 }
-
-function UserItem({ user }: { user: User }) {
-  const supabase = createClient();
-  const { user: currentUser } = useAuth();
+function UserItem({
+  user,
+  currentUser,
+}: {
+  user: User;
+  currentUser: AuthUser | null;
+}) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
   const handleStartChat = async () => {
-    if (!currentUser?.id) return;
+    if (!currentUser?.id) {
+      toast.error("Please log in to start a chat");
+      return;
+    }
+
     setLoading(true);
     nprogress.start();
 
@@ -85,14 +160,15 @@ function UserItem({ user }: { user: User }) {
         if (error) throw error;
         chatId = newChat.id;
       }
-
-      // Redirect to chat
-      router.push(`/chat/${chatId}?username=${user.username}`);
+      // Use user metadata username or fallback
+      const username = currentUser?.user_metadata?.username || user.username;
+      router.push(`/chat/${chatId}?username=${username}`);
     } catch (error) {
-      console.error(error);
+      console.error("Error starting chat:", error);
       toast.error("Failed to start chat");
     } finally {
       setLoading(false);
+      nprogress.done();
     }
   };
 
