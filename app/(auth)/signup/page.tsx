@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/card";
 import { createClient } from "@/utils/supabase/client";
 import nProgress from "nprogress";
+import { toast } from "sonner";
 
 export default function SignupPage() {
   const [email, setEmail] = useState("");
@@ -31,55 +32,105 @@ export default function SignupPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
+    nProgress.start();
 
     // Validate inputs
     if (password !== confirmPassword) {
       setError("Passwords don't match");
       setLoading(false);
+      nProgress.done();
+      return;
+    }
+
+    if (username.length < 3) {
+      setError("Username must be at least 3 characters");
+      setLoading(false);
+      nProgress.done();
+      return;
+    }
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters");
+      setLoading(false);
+      nProgress.done();
       return;
     }
 
     try {
-      // Sign up with Supabase
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            username: username,
+      // Check if username or email already exists
+      const { data: existingUsers } = await supabase
+        .from("users")
+        .select("username, email")
+        .or(`username.eq.${username},email.eq.${email}`);
+
+      if (existingUsers && existingUsers.length > 0) {
+        const existingUser = existingUsers[0];
+        if (existingUser.username === username) {
+          throw new Error("Username already taken");
+        }
+        if (existingUser.email === email) {
+          throw new Error("Email already registered");
+        }
+      }
+
+      // Sign up with Supabase Auth
+      const { data: authData, error: signUpError } = await supabase.auth.signUp(
+        {
+          email,
+          password,
+          options: {
+            data: {
+              username: username,
+            },
           },
-        },
-      });
+        }
+      );
 
       if (signUpError) {
         throw signUpError;
       }
 
-      // Insert additional user data to your profiles table
+      if (!authData.user) {
+        throw new Error("Failed to create user account");
+      }
+
+      // Insert user data into your users table
       const { error: profileError } = await supabase.from("users").insert([
         {
-          id: data.user?.id,
-          email: email,
+          id: authData.user.id,
           username: username,
+          email: email,
+          avatar_url: null,
+          is_online: false,
         },
       ]);
 
       if (profileError) {
-        throw profileError;
+        console.error("Profile creation error:", profileError);
+        setError(
+          "Failed to create user profile. Please try again later or contact support."
+        );
       }
 
+      toast.success(
+        "Account created successfully! Please check your email to verify your account."
+      );
+
       // Redirect to verification page
-      nProgress.start();
       router.push("/verify-email");
     } catch (error: any) {
-      setError(error.message);
+      console.error("Signup error:", error);
+      setError(error.message || "An error occurred during signup");
+      toast.error(error.message || "Failed to create account");
     } finally {
       setLoading(false);
+      nProgress.done();
     }
   };
 
   const handleGoogleSignUp = async () => {
     try {
+      setLoading(true);
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -90,31 +141,51 @@ export default function SignupPage() {
       if (error) throw error;
     } catch (error: any) {
       setError(error.message);
+      toast.error(error.message || "Failed to sign up with Google");
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <Card className="w-full max-w-[991px] md:min-w-[500px]">
+    <div className="min-h-screen flex items-center justify-center p-4  w-full">
+      <Card className="w-full max-w-2xl md:min-w-2xl">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl">Create an account</CardTitle>
-          <CardDescription>Enter your details to get started</CardDescription>
+          <CardTitle className="text-2xl text-center">
+            Create an account
+          </CardTitle>
+          <CardDescription className="text-center">
+            Enter your details to get started
+          </CardDescription>
         </CardHeader>
         <form onSubmit={handleSignUp}>
           <CardContent className="grid gap-4">
             {error && (
-              <div className="text-red-500 text-sm text-center">{error}</div>
+              <div className="text-red-500 text-sm text-center p-3 bg-red-50 dark:bg-red-900/20 rounded-md">
+                {error}
+              </div>
             )}
             <div className="grid gap-2">
-              <Label htmlFor="name">Full Name</Label>
+              <Label htmlFor="username">Username</Label>
               <Input
-                id="name"
+                id="username"
                 type="text"
-                placeholder="John Doe"
+                placeholder="johndoe"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) =>
+                  setUsername(
+                    e.target.value
+                      .toLowerCase()
+                      .replace(/[^a-z0-9_\u0600-\u06FF]/g, "")
+                  )
+                }
                 required
+                minLength={3}
+                maxLength={20}
+                disabled={loading}
               />
+              <p className="text-xs text-muted-foreground">
+                Only lowercase letters, numbers, and underscores allowed
+              </p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="email">Email</Label>
@@ -125,6 +196,7 @@ export default function SignupPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                disabled={loading}
               />
             </div>
             <div className="grid gap-2">
@@ -132,10 +204,12 @@ export default function SignupPage() {
               <Input
                 id="password"
                 type="password"
+                placeholder="Enter your password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={6}
+                disabled={loading}
               />
             </div>
             <div className="grid gap-2">
@@ -143,9 +217,11 @@ export default function SignupPage() {
               <Input
                 id="confirm-password"
                 type="password"
+                placeholder="Confirm your password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
+                disabled={loading}
               />
             </div>
           </CardContent>
@@ -157,6 +233,7 @@ export default function SignupPage() {
             >
               {loading ? "Creating account..." : "Sign Up"}
             </Button>
+
             <div className="relative">
               <div className="relative flex justify-center text-xs uppercase">
                 <span className="px-2 text-muted-foreground">
@@ -164,6 +241,7 @@ export default function SignupPage() {
                 </span>
               </div>
             </div>
+
             <Button
               variant="outline"
               className="w-full"
@@ -173,6 +251,7 @@ export default function SignupPage() {
             >
               Google
             </Button>
+
             <p className="text-sm text-center text-muted-foreground">
               Already have an account?{" "}
               <Link href="/login" className="text-primary hover:underline">
