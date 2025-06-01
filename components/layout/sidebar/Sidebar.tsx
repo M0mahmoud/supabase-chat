@@ -23,7 +23,7 @@ export default function Sidebar() {
           <Link href="/chat">
             <Mails
               size={24}
-              className={pathname === "/chat" ? "stroke-blue-600" : ""}
+              className={pathname.startsWith("/chat") ? "stroke-blue-600" : ""}
             />
           </Link>
           <Link href="/search">
