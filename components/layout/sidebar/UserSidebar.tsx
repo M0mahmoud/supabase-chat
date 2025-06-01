@@ -1,6 +1,7 @@
 "use client";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/useAuth";
+import { useChatReadStatus } from "@/hooks/useChatReadStatus";
 import { AVATAR_URL } from "@/utils/constants";
 import { createClient } from "@/utils/supabase/client";
 import { Plus, Search } from "lucide-react";
@@ -13,10 +14,10 @@ interface ChatWithLastMessage {
   username: string;
   message: string;
   time: string;
-  created_at: string;
   unreadCount: number;
   lastMessageTime: string;
-  isOnline?: boolean;
+  isOnline: boolean;
+  otherUserId: string;
 }
 
 export default function UserSidebar() {
@@ -24,6 +25,38 @@ export default function UserSidebar() {
   const supabase = createClient();
   const [chats, setChats] = useState<ChatWithLastMessage[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const { isChatOpen } = useChatReadStatus();
+
+  // Get read messages from localStorage
+  const getReadMessages = (): Record<string, string[]> => {
+    if (typeof window === "undefined") return {};
+    const stored = localStorage.getItem(`readMessages_${currentUser?.id}`);
+    return stored ? JSON.parse(stored) : {};
+  };
+
+  // Save read messages to localStorage
+  const saveReadMessages = (readMessages: Record<string, string[]>) => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(
+      `readMessages_${currentUser?.id}`,
+      JSON.stringify(readMessages)
+    );
+  };
+
+  // Get last read timestamp for a chat
+  const getLastReadTimestamp = (chatId: string): string | null => {
+    if (typeof window === "undefined") return null;
+    const stored = localStorage.getItem(
+      `lastRead_${currentUser?.id}_${chatId}`
+    );
+    return stored || null;
+  };
+
+  // Save last read timestamp for a chat
+  const saveLastReadTimestamp = (chatId: string, timestamp: string) => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(`lastRead_${currentUser?.id}_${chatId}`, timestamp);
+  };
 
   useEffect(() => {
     if (!currentUser?.id) return;
@@ -38,8 +71,9 @@ export default function UserSidebar() {
             id,
             user1_id,
             user2_id,
-            user1:user1_id(username, avatar_url, is_online),
-            user2:user2_id(username, avatar_url, is_online)
+            created_at,
+            user1:user1_id(username, avatar_url),
+            user2:user2_id(username, avatar_url)
           `
           )
           .or(`user1_id.eq.${currentUser.id},user2_id.eq.${currentUser.id}`);
@@ -60,11 +94,11 @@ export default function UserSidebar() {
             // Get the other user's info
             const otherUser =
               chat.user1_id === currentUser.id ? chat.user2 : chat.user1;
+            const otherUserId =
+              chat.user1_id === currentUser.id ? chat.user2_id : chat.user1_id;
             const otherUserData = otherUser as unknown as {
               username: string;
               avatar_url?: string;
-              created_at: string;
-              is_online?: boolean;
             };
 
             // Get the last message for this chat
@@ -83,16 +117,33 @@ export default function UserSidebar() {
               .limit(1)
               .single();
 
-            // Count unread messages (messages not sent by current user)
-            const { count: unreadCount } = await supabase
-              .from("messages")
-              .select("*", { count: "exact", head: true })
-              .eq("chat_id", chat.id)
-              .neq("sender_id", currentUser.id);
+            // Calculate unread count based on last read timestamp
+            const lastReadTimestamp = getLastReadTimestamp(chat.id);
+            let unreadCount = 0;
+
+            if (lastReadTimestamp) {
+              // Count messages from other users after the last read timestamp
+              const { count } = await supabase
+                .from("messages")
+                .select("*", { count: "exact", head: true })
+                .eq("chat_id", chat.id)
+                .neq("sender_id", currentUser.id)
+                .gt("created_at", lastReadTimestamp);
+
+              unreadCount = count || 0;
+            } else {
+              // If no last read timestamp, count all messages from other users
+              const { count } = await supabase
+                .from("messages")
+                .select("*", { count: "exact", head: true })
+                .eq("chat_id", chat.id)
+                .neq("sender_id", currentUser.id);
+
+              unreadCount = count || 0;
+            }
 
             const lastMessage = lastMessageData?.content || "Start chatting";
             const lastMessageTime =
-              // @ts-ignore
               lastMessageData?.created_at || chat.created_at || "";
             // @ts-ignore
             const senderName = lastMessageData?.users?.username;
@@ -112,9 +163,10 @@ export default function UserSidebar() {
               username: otherUserData?.username || "Unknown User",
               message: displayMessage,
               time: formatTime(lastMessageTime),
-              unreadCount: unreadCount || 0,
-              lastMessageTime: lastMessageTime,
-              isOnline: otherUserData?.is_online || false,
+              unreadCount,
+              lastMessageTime,
+              isOnline: false, // Will be updated by presence
+              otherUserId,
             };
           })
         );
@@ -129,7 +181,6 @@ export default function UserSidebar() {
           );
         });
 
-        // @ts-ignore
         setChats(sortedChats);
       } catch (error) {
         console.error("Error fetching chats:", error);
@@ -139,12 +190,12 @@ export default function UserSidebar() {
     fetchChatsWithLastMessage();
   }, [currentUser?.id, supabase]);
 
-  // Real-time subscription for new messages
+  // Enhanced real-time subscription for new messages
   useEffect(() => {
     if (!currentUser?.id) return;
 
     const channel = supabase
-      .channel("messages-changes")
+      .channel("chat-updates")
       .on(
         "postgres_changes",
         {
@@ -154,29 +205,56 @@ export default function UserSidebar() {
         },
         (payload) => {
           console.log("New message received:", payload);
-          // Refresh chats when a new message is received
-          refreshChats();
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "users",
-          filter: `is_online=eq.true`,
-        },
-        (payload) => {
-          console.log("User online status changed:", payload);
-          // Update online status for users
+          const newMessage = payload.new;
+
+          // Update the specific chat with new message
           setChats((prevChats) =>
             prevChats.map((chat) => {
-              if (payload.new.username === chat.username) {
-                return { ...chat, isOnline: payload.new.is_online };
+              if (chat.id === newMessage.chat_id) {
+                const isFromCurrentUser =
+                  newMessage.sender_id === currentUser.id;
+                const isChatCurrentlyOpen = isChatOpen(chat.id);
+
+                // Only increment unread count if:
+                // 1. Message is not from current user AND
+                // 2. Chat is not currently open
+                const shouldIncrementUnread =
+                  !isFromCurrentUser && !isChatCurrentlyOpen;
+
+                // If chat is currently open and message is from other user, mark as read
+                if (isChatCurrentlyOpen && !isFromCurrentUser) {
+                  const now = new Date().toISOString();
+                  saveLastReadTimestamp(chat.id, now);
+                }
+
+                return {
+                  ...chat,
+                  message: isFromCurrentUser
+                    ? `You: ${newMessage.content}`
+                    : newMessage.content,
+                  time: formatTime(newMessage.created_at),
+                  lastMessageTime: newMessage.created_at,
+                  unreadCount: shouldIncrementUnread
+                    ? chat.unreadCount + 1
+                    : chat.unreadCount,
+                };
               }
               return chat;
             })
           );
+
+          // Resort chats by latest message
+          setChats((prevChats) => {
+            const updatedChats = [...prevChats];
+            return updatedChats.sort((a, b) => {
+              if (!a.lastMessageTime) return 1;
+              if (!b.lastMessageTime) return -1;
+              return (
+                new Date(b.lastMessageTime).getTime() -
+                new Date(a.lastMessageTime).getTime()
+              );
+            });
+          });
         }
       )
       .subscribe();
@@ -184,99 +262,70 @@ export default function UserSidebar() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [currentUser?.id, supabase]);
+  }, [currentUser?.id, supabase, isChatOpen]);
 
-  const refreshChats = async () => {
+  // Function to mark chat as read when clicked
+  const markChatAsRead = (chatId: string) => {
+    const now = new Date().toISOString();
+
+    // Save the current timestamp as the last read time for this chat
+    saveLastReadTimestamp(chatId, now);
+
+    // Update the chat's unread count to 0 in the UI
+    setChats((prevChats) =>
+      prevChats.map((chat) =>
+        chat.id === chatId ? { ...chat, unreadCount: 0 } : chat
+      )
+    );
+  };
+
+  // Function to refresh unread counts (useful for debugging or manual refresh)
+  const refreshUnreadCounts = async () => {
     if (!currentUser?.id) return;
 
-    try {
-      const { data: chatsData, error } = await supabase
-        .from("chats")
-        .select(
-          `
-          id,
-          user1_id,
-          user2_id,
-          user1:user1_id(username, avatar_url, is_online),
-          user2:user2_id(username, avatar_url, is_online)
-        `
-        )
-        .or(`user1_id.eq.${currentUser.id},user2_id.eq.${currentUser.id}`);
+    const updatedChats = await Promise.all(
+      chats.map(async (chat) => {
+        const lastReadTimestamp = getLastReadTimestamp(chat.id);
+        let unreadCount = 0;
 
-      if (error || !chatsData) return;
-
-      const chatsWithMessages = await Promise.all(
-        chatsData.map(async (chat) => {
-          const otherUser =
-            chat.user1_id === currentUser.id ? chat.user2 : chat.user1;
-          const otherUserData = otherUser as unknown as {
-            username: string;
-            avatar_url?: string;
-            is_online?: boolean;
-          };
-
-          const { data: lastMessageData } = await supabase
+        if (lastReadTimestamp) {
+          const { count } = await supabase
             .from("messages")
-            .select(
-              `
-              content,
-              created_at,
-              sender_id,
-              users!messages_sender_id_fkey(username)
-            `
-            )
+            .select("*", { count: "exact", head: true })
             .eq("chat_id", chat.id)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .single();
+            .neq("sender_id", currentUser.id)
+            .gt("created_at", lastReadTimestamp);
 
-          const { count: unreadCount } = await supabase
+          unreadCount = count || 0;
+        } else {
+          const { count } = await supabase
             .from("messages")
             .select("*", { count: "exact", head: true })
             .eq("chat_id", chat.id)
             .neq("sender_id", currentUser.id);
 
-          const lastMessage = lastMessageData?.content || "Start chatting";
-          const lastMessageTime = lastMessageData?.created_at || "";
-          // @ts-ignore
-          const senderName = lastMessageData?.users?.username;
+          unreadCount = count || 0;
+        }
 
-          let displayMessage = lastMessage;
-          if (lastMessageData) {
-            if (lastMessageData.sender_id === currentUser.id) {
-              displayMessage = `You: ${lastMessage}`;
-            } else if (senderName) {
-              displayMessage = `${senderName}: ${lastMessage}`;
-            }
-          }
+        return { ...chat, unreadCount };
+      })
+    );
 
-          return {
-            id: chat.id,
-            username: otherUserData?.username || "Unknown User",
-            message: displayMessage,
-            time: formatTime(lastMessageTime),
-            unreadCount: unreadCount || 0,
-            lastMessageTime: lastMessageTime,
-            isOnline: otherUserData?.is_online || false,
-          };
-        })
-      );
-
-      const sortedChats = chatsWithMessages.sort((a, b) => {
-        if (!a.lastMessageTime) return 1;
-        if (!b.lastMessageTime) return -1;
-        return (
-          new Date(b.lastMessageTime).getTime() -
-          new Date(a.lastMessageTime).getTime()
-        );
-      });
-
-      // @ts-ignore
-      setChats(sortedChats);
-    } catch (error) {
-      console.error("Error refreshing chats:", error);
-    }
+    setChats(updatedChats);
   };
+
+  // Refresh unread counts when component mounts or when coming back to the tab
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshUnreadCounts();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [chats.length]);
 
   const formatTime = (dateString: string) => {
     if (!dateString) return "";
@@ -291,7 +340,6 @@ export default function UserSidebar() {
         minute: "2-digit",
       });
     } else if (diffInHours < 168) {
-      // 7 days
       return date.toLocaleDateString([], { weekday: "short" });
     } else {
       return date.toLocaleDateString([], { month: "short", day: "numeric" });
@@ -300,6 +348,12 @@ export default function UserSidebar() {
 
   const filteredChats = chats.filter((chat) =>
     chat.username.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // Calculate total unread messages
+  const totalUnreadCount = chats.reduce(
+    (total, chat) => total + chat.unreadCount,
+    0
   );
 
   return (
@@ -311,9 +365,11 @@ export default function UserSidebar() {
             <h1 className="text-xl font-semibold text-blue-600 leading-[1.1]">
               Messages
             </h1>
-            <span className="bg-blue-600 text-white text-sm px-2 py-1 rounded-full size-6 flex items-center justify-center">
-              {chats.length}
-            </span>
+            {totalUnreadCount > 0 && (
+              <span className="bg-red-500 text-white text-sm px-2 py-1 rounded-full min-w-[20px] h-5 flex items-center justify-center">
+                {totalUnreadCount > 99 ? "99+" : totalUnreadCount}
+              </span>
+            )}
           </div>
           <Link
             href="/"
@@ -349,8 +405,9 @@ export default function UserSidebar() {
               </h3>
               {filteredChats.map((conv) => (
                 <Link
-                  href={`/chat/${conv.id}?username=${conv.username}`}
+                  href={`/chat/${conv.id}`}
                   key={conv.id}
+                  onClick={() => markChatAsRead(conv.id)}
                   className="p-4 hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer transition-colors border-b dark:border-white/20 border-black/20 block"
                 >
                   <div className="flex items-start gap-3">
@@ -363,28 +420,45 @@ export default function UserSidebar() {
                         width={48}
                         height={48}
                       />
-                      {/* Online indicator */}
+                      {/* Enhanced Online indicator */}
                       {conv.isOnline && (
-                        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white dark:border-gray-800 rounded-full"></div>
+                        <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-green-500 border-2 border-white dark:border-gray-800 rounded-full">
+                          <div className="w-full h-full bg-green-500 rounded-full animate-pulse"></div>
+                        </div>
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <h3 className="truncate text-gray-900 dark:text-white font-medium">
-                          {conv.username}
-                        </h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className="truncate text-gray-900 dark:text-white font-medium">
+                            {conv.username}
+                          </h3>
+                          {/* Online status text indicator */}
+                          {conv.isOnline && (
+                            <span className="text-xs text-green-500 font-medium">
+                              • Online
+                            </span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-gray-500">
                             {conv.time}
                           </span>
+                          {/* Enhanced unread count badge */}
                           {conv.unreadCount > 0 && (
-                            <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded-full min-w-[20px] h-5 flex items-center justify-center">
+                            <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full min-w-[18px] h-5 flex items-center justify-center font-medium shadow-sm">
                               {conv.unreadCount > 99 ? "99+" : conv.unreadCount}
                             </span>
                           )}
                         </div>
                       </div>
-                      <p className="text-sm truncate text-gray-600 dark:text-gray-300 mt-1">
+                      <p
+                        className={`text-sm truncate mt-1 ${
+                          conv.unreadCount > 0
+                            ? "text-gray-900 dark:text-white font-medium"
+                            : "text-gray-600 dark:text-gray-300"
+                        }`}
+                      >
                         {conv.message}
                       </p>
                     </div>

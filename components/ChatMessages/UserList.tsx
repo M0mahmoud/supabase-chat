@@ -161,8 +161,7 @@ function UserItem({
         chatId = newChat.id;
       }
       // Use user metadata username or fallback
-      const username = currentUser?.user_metadata?.username || user.username;
-      router.push(`/chat/${chatId}?username=${username}`);
+      router.push(`/chat/${chatId}`);
     } catch (error) {
       console.error("Error starting chat:", error);
       toast.error("Failed to start chat");
