@@ -1,6 +1,24 @@
+"use client";
+
 import { MessageCircle, Sparkles } from "lucide-react";
+import Loading from "@/components/layout/Loading";
+import { useAuth } from "@/hooks/useAuth";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 export default function UserChats() {
+  const { isLoading, user } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      router.push("/login");
+    }
+  }, [user, isLoading, router]);
+
+  if (isLoading || !user) {
+    return <Loading />;
+  }
   return (
     <div className="flex flex-col w-full max-h-dvh h-dvh mx-auto justify-center items-center">
       <div className="relative z-10 flex flex-col items-center justify-center flex-1 p-8 text-center">

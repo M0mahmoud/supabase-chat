@@ -4,14 +4,26 @@ export interface ChatMessage {
   user: {
     name: string;
   };
-  createdAt: string;
+  createdAt: string; // Make sure this is always a string
+}
+
+export interface DatabaseMessage {
+  id: string;
+  chat_id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
+  users?: {
+    username: string;
+  };
 }
 
 export interface User {
   id: string;
-  created_at: Date;
   username: string;
   email: string;
-  password: string | null;
-  is_anonymous: boolean;
+  avatar_url?: string;
+  is_online?: boolean;
+  last_active?: string;
+  created_at?: string;
 }

@@ -17,8 +17,8 @@ export default function ChatMessageItem({
       <div className="flex items-end space-x-2 max-w-xs">
         {!isOwnMessage && (
           <img
-            src={AVATAR_URL + "seed=2"}
-            alt="Florencio"
+            src={AVATAR_URL + "seed=" + msg.user.name}
+            alt={msg.user.name}
             className="w-8 h-8 rounded-full object-cover flex-shrink-0"
           />
         )}
@@ -33,7 +33,7 @@ export default function ChatMessageItem({
         </div>
         {isOwnMessage && (
           <img
-            src={AVATAR_URL + "seed=1"}
+            src={AVATAR_URL + "seed=" + msg.user.name}
             alt="You"
             className="w-8 h-8 rounded-full object-cover flex-shrink-0"
           />
